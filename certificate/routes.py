@@ -1,4 +1,4 @@
-from blacksheep import FromForm, Request, route,get ,json ,post ,FromJSON
+from blacksheep import FromForm, Request, route,get ,json ,post ,FromJSON , delete
 import app
 from certificate.tables import Certificate
 from  certificate.schema import CertificateCreate
@@ -77,3 +77,26 @@ async def verify_certificate(reg_num: str):
 async def certificate_all():
     all_cert = await Certificate.select().run()
     return json(all_cert)
+
+@delete("/certificate-delete/{id}")
+async def certificate_delete(id: int):
+    # 1. Fetch the certificate first to find the image filename
+    cert = await Certificate.objects().get(Certificate.id == id)
+
+    if not cert:
+        return json({"error": "Certificate not found"}, status=404)
+
+    # 2. Delete the physical file from the jpg folder
+    if cert.image:
+        file_path = os.path.join("jpg", cert.image)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+    # 3. Delete the record from the database
+    # In Piccolo, .remove() is the easiest way to delete a fetched object
+    await cert.remove()
+
+    return json({
+        "success": True, 
+        "message": f"Certificate {id} and its image were deleted"
+    })
