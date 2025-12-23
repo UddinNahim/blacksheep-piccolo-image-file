@@ -1,8 +1,9 @@
-from blacksheep import FromForm, Request, route,get ,json ,post ,FromJSON , delete
-import app
+from blacksheep import  FromForm, Request, not_found, route,get ,json ,post ,FromJSON , delete ,status_code
+import app 
 from certificate.tables import Certificate
-from  certificate.schema import CertificateCreate
+from  certificate.schema import CertificateCreate,CertificateVerifyResponse
 import uuid ,os
+
 
 JPG_FOLDER = "certificate/jpg"
 
@@ -100,3 +101,39 @@ async def certificate_delete(id: int):
         "success": True, 
         "message": f"Certificate {id} and its image were deleted"
     })
+from certificate.schema import CertificateCreate,CertificateRead
+    
+@post("/certificates2")
+async def create_cert(data:CertificateCreate):
+    existing = await Certificate.objects().get(
+        (Certificate.registration_number == data.registration_number) &
+        (Certificate.batch == data.batch)
+    )
+    if existing:
+        return {"error":"certificate already exists"}
+
+    new_cert = await Certificate.create_with_safe_id(**data.model_dump())
+    return new_cert.to_dict()
+
+@get("/certificates2")
+async def get_all_certificate():
+    return await Certificate.select()
+
+
+
+
+
+@get("/certificates2/{certificate_id}")
+async def verification_certificate(certificate_id: str) :
+    # Use .objects() to get a Piccolo object
+    verify = await Certificate.objects().where(
+        Certificate.certificate_id == certificate_id
+    ).first()
+
+    if not verify:
+        # Note: In BlackSheep controllers, use self.not_found() 
+        # or raise the exception directly
+        return not_found({"error": "Certificate not found or invalid."})
+    
+    response_data  = CertificateVerifyResponse.model_validate(verify)
+    return response_data.model_dump()
