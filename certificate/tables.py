@@ -1,21 +1,20 @@
-from __future__  import annotations
+from __future__ import annotations
 
-from enum import StrEnum
-from datetime import datetime, timezone
 import secrets
+from datetime import UTC, datetime
+from enum import StrEnum
 
-from piccolo.table import Table
-from piccolo.columns import Varchar, UUID, Timestamptz
-from piccolo.columns.defaults.uuid import UUID4
-from piccolo.columns.defaults.timestamptz import TimestamptzNow
 from asyncpg.exceptions import UniqueViolationError
-
+from piccolo.columns import UUID, Boolean, Timestamptz, Varchar
+from piccolo.columns.defaults.timestamptz import TimestamptzNow
+from piccolo.columns.defaults.uuid import UUID4
+from piccolo.table import Table
 
 CERT_PREFIX = "FAAC"
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def generate_certificate_id(prefix: str = CERT_PREFIX) -> str:
@@ -49,14 +48,17 @@ class Certificate(Table):
     completion_date = Timestamptz(null=True)
     issue_date = Timestamptz(default=TimestamptzNow())
 
-    status = Varchar(length=20, choices=CertificateStatus, default=CertificateStatus.PENDING)
+    status = Varchar(
+        length=20, choices=CertificateStatus, default=CertificateStatus.PENDING
+    )
     image = Varchar(length=255, null=True)
 
+    is_active = Boolean(default=True)
     created_at = Timestamptz(default=TimestamptzNow())
     updated_at = Timestamptz(auto_update=utcnow)
 
     @classmethod
-    async def create_with_safe_id(cls, **data) -> "Certificate":
+    async def create_with_safe_id(cls, **data) -> Certificate:
         """
         Optional helper:
         retries if a rare collision happens (unique constraint).

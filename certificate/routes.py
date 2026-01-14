@@ -1,65 +1,105 @@
-from blacksheep import Request, FromFiles, post
-from blacksheep.server.responses import created, bad_request, json
-from pydantic import ValidationError
+from blacksheep import FromJSON, Request, Response, auth, ok, created, no_content, not_found
+from src.common.constants import MAX_LIMIT
+from src.common.response import ErrorResponse, PaginatedResponse
+from certificate.schema import (
+    CertificateCreateSchema,
+    CertificateListResponseSchema,
+    CertificateResponseSchema,
+    CertificateUpdateSchema,
+)
+from certificate.tables import Certificate
 
-# Assuming these are your local project imports
-from certificate.r2_client import upload_certificate_image
-from certificate.schema import CertificateCreate, CertificateRead 
-from certificate.tables import Certificate, generate_certificate_id 
+# Helper for consistent 404 formatting
+def certificate_not_found(certificate_id: str):
+    return not_found(ErrorResponse(
+        code=404,
+        message="certificate_id not found",
+        error_code="not_found",
+        details={"certificate_id": certificate_id},
+    ))
 
-@post("/create-certificate")
-async def create_certificate(request: Request, files: FromFiles):
-    """
-    Creates a certificate by validating form data and uploading an image.
-    """
-    # 1. Extract and Validate Form Data
-    # Since you are sending images, the data is coming in as multipart/form-data
-    form_data = await request.form()
-    
-    try:
-        # Convert the MultiDict to a regular dict for Pydantic
-        # Note: form_data.items() handles the conversion properly
-        payload = CertificateCreate(**{k: v for k, v in form_data.items()})
-    except ValidationError as e:
-        # 'unprocessable_entity' doesn't exist in BlackSheep, use json(..., status=422)
-        return json(e.errors(), status=422)
 
-    # 2. Handle Image Upload
-    image_key = None
-    
-    # files.value is a list of FormFile objects
-    if files.value and len(files.value) > 0:
-        image = files.value[0]
-        content = await image.read()
-        
-        # Validate format and size (5MB limit)
-        allowed_types = ("image/jpeg", "image/png", "image/jpg")
-        if image.content_type not in allowed_types:
-            return bad_request("Invalid format. Only JPG/PNG allowed.")
-            
-        if len(content) > 5 * 1024 * 1024:
-            return bad_request("File too large. Max 5MB.")
-        
-        # Upload to R2 and get the key/path
-        image_key = upload_certificate_image(content, image.content_type)
+async def create_certificate(data: FromJSON[CertificateCreateSchema]) -> Response:
+    new_cert = await Certificate.create_with_safe_id(**data.value.model_dump())
+    # BlackSheep automatically handles Pydantic models if you use created()
+    return created(CertificateResponseSchema(**new_cert.to_dict()))
 
-    # 3. Save to Database
-    # Using await as per your generate_certificate_id call
-    cert_id = await generate_certificate_id()
-    
-    cert = Certificate(
-        certificate_id=cert_id,
-        image_key=image_key,
-        **payload.model_dump()
+
+async def get_certificates(
+    certificate_id: str | None = None, 
+    limit: int = 15, 
+    offset: int = 0
+) -> Response:
+    if certificate_id:
+        certificate = await Certificate.objects().where(
+            Certificate.certificate_id == certificate_id,
+            Certificate.is_active.eq(True),
+        ).first()
+
+        if not certificate:
+            return certificate_not_found(certificate_id)
+
+        return ok(CertificateResponseSchema(**certificate.to_dict()))
+
+    # Pagination logic
+    total_items = await Certificate.count().where(Certificate.is_active.eq(True))
+    certificates = (
+        await Certificate.objects()
+        .where(Certificate.is_active.eq(True))
+        .offset(offset * limit)
+        .order_by(Certificate.created_at, ascending=False)
+        .limit(min(limit, MAX_LIMIT))
     )
     
-    await cert.save()
+    response = PaginatedResponse(
+        limit=limit,
+        offset=offset,
+        total_items=total_items,
+        data=CertificateListResponseSchema(
+            root=[CertificateResponseSchema(**cert.to_dict()) for cert in certificates]
+        ),
+    )
+    return ok(response)
 
-    # 4. Return success response (201 Created)
-    # We create the read schema and dump it to a dict for the response
-    response_data = CertificateRead(
-        **cert.to_dict(), 
-        image_url=image_key
-    ).model_dump()
 
-    return created(response_data)
+@auth("authenticated")
+@require_certificate_write()
+async def delete_certificate(certificate_id: str) -> Response:
+    # Check existence before "soft delete"
+    exists = await Certificate.objects().where(
+        Certificate.certificate_id == certificate_id,
+        Certificate.is_active.eq(True),
+    ).exists()
+
+    if not exists:
+        return certificate_not_found(certificate_id)
+
+    await Certificate.update(is_active=False).where(
+        Certificate.certificate_id == certificate_id
+    ).run()
+
+    return no_content()
+
+
+@auth("authenticated")
+@require_certificate_write()
+async def update_certificate(
+    certificate_id: str,
+    data: FromJSON[CertificateUpdateSchema],
+) -> Response:
+    exist = await Certificate.objects().where(
+        Certificate.certificate_id == certificate_id,
+        Certificate.is_active.eq(True),
+    ).first()
+
+    if not exist:
+        return certificate_not_found(certificate_id)
+
+    await (
+        Certificate.update(**data.value.model_dump(exclude_unset=True))
+        .where(Certificate.certificate_id == certificate_id)
+        .run()
+    )
+    
+    await exist.refresh()
+    return ok(CertificateResponseSchema(**exist.to_dict()))

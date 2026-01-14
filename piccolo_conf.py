@@ -10,4 +10,4 @@ DB = PostgresEngine(
         "port": 5435,
     }
 )
-APP_REGISTRY = AppRegistry(apps=["app.piccolo_app", "certificate.piccolo_app"])
+APP_REGISTRY = AppRegistry(apps=["app.piccolo_app", "certificate.piccolo_app","ecommerce.piccolo_app"])
